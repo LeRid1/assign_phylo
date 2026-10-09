@@ -47,6 +47,31 @@ class Node:
         self.right_distance = right_distance
         self.confidence = confidence
 
+        # Internal helper: track how many children have been assigned
+        self._child_count = 0
+
+    def add_child(self, child: "Node", branch_length: float):
+        """
+        Attach a child to this node. The first child becomes `left`,
+        the second becomes `right`. A third child is not allowed.
+        """
+        if self._child_count == 0:
+            self.left = child
+            self.left_distance = branch_length
+        elif self._child_count == 1:
+            self.right = child
+            self.right_distance = branch_length
+        else:
+            raise ValueError(
+                f"Node '{self.name}' already has two children; "
+                "neighbor-joining trees must be strictly binary."
+            )
+
+        self._child_count += 1
+
+    def __repr__(self):
+        return f"Node({self.name})"
+
 
 def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
     """The Neighbor-Joining algorithm.
@@ -71,9 +96,96 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
 
     """
     
-    self.tree = Node()
+    # Create initial leaf nodes
+    nodes = {label: Node(name=label) for label in labels}
 
-    raise NotImplementedError()
+    # Work on copies so original inputs remain unchanged
+    D = distances.astype(float)
+    L = labels.copy()
+
+    while len(L) > 2:
+
+        n = len(L)
+
+        # ----------------------------------------------------
+        # Step 1: Compute Q-matrix
+        # ----------------------------------------------------
+        Q = np.zeros((n, n))
+
+        row_sums = np.sum(D, axis=1)
+
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    Q[i, j] = (n - 2) * D[i, j] - row_sums[i] - row_sums[j]
+
+        # Find pair with minimum Q value
+        # Use argmin to break ties deterministically
+
+        flat_index = np.argmin(Q + np.eye(n) * np.inf)
+        i, j = divmod(flat_index, n)
+
+        label_i = L[i]
+        label_j = L[j]
+
+        # Create new internal node U
+
+        new_label = f"{label_i}_{label_j}"
+        U = Node(name=new_label)
+
+        # Compute branch lengths to U
+
+        sum_i = row_sums[i]
+        sum_j = row_sums[j]
+
+        delta_iU = 0.5 * D[i, j] + (sum_i - sum_j) / (2 * (n - 2))
+        delta_jU = D[i, j] - delta_iU
+
+        U.add_child(nodes[label_i], delta_iU)
+        U.add_child(nodes[label_j], delta_jU)
+
+
+        # Compute distances from U to all other nodes
+    
+        new_row = []
+        for k in range(n):
+            if k != i and k != j:
+                dUk = 0.5 * (D[i, k] + D[j, k] - D[i, j])
+                new_row.append(dUk)
+
+      
+        # Update distance matrix and labels
+ 
+        # Remove rows/columns i and j
+        mask = np.ones(n, dtype=bool)
+        mask[[i, j]] = False
+        D = D[mask][:, mask]
+
+        # Append new row/column
+        new_row = np.array(new_row)
+        D = np.vstack([D, new_row])
+        new_col = np.append(new_row, 0.0)
+        D = np.column_stack([D, new_col])
+
+        # Update labels
+        L = [L[k] for k in range(n) if k not in (i, j)]
+        L.append(new_label)
+
+        nodes[new_label] = U
+
+    # Final iteration: only two nodes remain
+
+    label_a, label_b = L
+    a_idx, b_idx = 0, 1
+
+    root = Node(name="root")
+    dist = D[a_idx, b_idx]
+    branch = dist / 2.0
+
+    root.add_child(nodes[label_a], branch)
+    root.add_child(nodes[label_b], branch)
+
+    return root
 
 
 def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
