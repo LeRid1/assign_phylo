@@ -8,10 +8,10 @@ class Node:
     def __init__(
         self,
         name: str,
-        left: "Node",
-        left_distance: float,
-        right: "Node",
-        right_distance: float,
+        left: "Node" = None,
+        left_distance: float = None,
+        right: "Node" = None,
+        right_distance: float = None,
         confidence: float = None,
     ):
         """A node in a binary tree produced by neighbor joining algorithm.
@@ -97,7 +97,10 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
     """
     
     # Create initial leaf nodes
-    nodes = {label: Node(name=label) for label in labels}
+    nodes = {
+        label: Node(name=label, left_distance=0.0, right_distance=0.0)
+        for label in labels
+    }
 
     # Work on copies so original inputs remain unchanged
     D = distances.astype(float)
@@ -107,12 +110,11 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
 
         n = len(L)
 
-        # ----------------------------------------------------
-        # Step 1: Compute Q-matrix
-        # ----------------------------------------------------
-        Q = np.zeros((n, n))
-
         row_sums = np.sum(D, axis=1)
+
+        # Compute Q-matrix
+        
+        Q = np.zeros((n, n))
 
         for i in range(n):
             for j in range(n):
@@ -145,24 +147,35 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
         U.add_child(nodes[label_j], delta_jU)
 
 
-        # Compute distances from U to all other nodes
     
-        new_row = []
+        # Step 1: Compute distances from U to all other nodes (OLD indexing)
+        new_row_old = []
         for k in range(n):
             if k != i and k != j:
                 dUk = 0.5 * (D[i, k] + D[j, k] - D[i, j])
-                new_row.append(dUk)
+                new_row_old.append((k, dUk))
 
-      
-        # Update distance matrix and labels
- 
-        # Remove rows/columns i and j
+        # Step 2: Remove rows/columns i and j
+        if i > j:
+            i, j = j, i
+
         mask = np.ones(n, dtype=bool)
         mask[[i, j]] = False
         D = D[mask][:, mask]
 
-        # Append new row/column
-        new_row = np.array(new_row)
+        # Step 3: Build remaining_old_indices from NEW matrix
+        remaining_old_indices = sorted(np.where(mask)[0])
+
+        # Step 4: Map old indices → new indices
+        old_to_new = {old: new for new, old in enumerate(remaining_old_indices)}
+
+        # Step 5: Build new_row using NEW indexing
+        new_row = np.zeros(len(D))
+        for old_k, value in new_row_old:
+            new_k = old_to_new[old_k]
+            new_row[new_k] = value
+
+        # Step 6: Insert new row/column
         D = np.vstack([D, new_row])
         new_col = np.append(new_row, 0.0)
         D = np.column_stack([D, new_col])
