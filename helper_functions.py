@@ -2,6 +2,9 @@
 import numpy as np
 from copy import deepcopy
 from matplotlib.axes import Axes
+from Bio import AlignIO
+import matplotlib
+import matplotlib.pyplot as plt
 
 
 class Node:
@@ -73,9 +76,19 @@ class Node:
         return f"Node({self.name})"
 
 
+def hamming_distance_array(MSA) -> np.ndarray:
+    """Given a fasta file (data/clustal_MSA_coronavirus.fasta), produce 
+    a distance matrix (as a np.ndarray) by calculating hamming distance.
+    """
+    alignment = AlignIO.read(MSA, "fasta")
+    arr = np.array([list(str(rec.seq).upper()) for rec in alignment])
+
+    distances = np.array([(arr != row).sum(axis=1) for row in arr], dtype=float)
+    return distances
+
+
 def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
-    ## TO DO: Currently fails is_isomorphic test when running:
-    # python -m unittest test_helper_functions.TestNeighborJoining
+    # Test by running python -m unittest test_helper_functions.TestNeighborJoining
 
 
     """The Neighbor-Joining algorithm.
@@ -207,6 +220,7 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
 
 
 def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
+    #TO DO: Make horizontal/vertical distances cleaner like the example.
     """A function for plotting neighbor joining phylogeny dendrogram.
 
     Parameters
@@ -340,6 +354,16 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
 
     return ax
 
+def plot_phylogenetic_tree_coronaviruses(fasta_file) -> Node:
+    # Use: tree = plot_phylogenetic_tree_coronaviruses(data/clustal_MSA_coronavirus.fasta)
+    alignment = AlignIO.read(fasta_file, "fasta")
+    labels = [rec.id for rec in alignment]   # e.g. "Breda|NC_007447.1"
+    D = hamming_distance_array("data/clustal_MSA_coronavirus.fasta")
+    tree = neighbor_joining(D, labels)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
+    plot_nj_tree(tree=tree, ax=ax)
+    fig.savefig("corona.png")
+    return tree
 
 def _find_a_parent_to_node(tree: Node, node: Node) -> tuple:
     """Utility function for reroot_tree"""
