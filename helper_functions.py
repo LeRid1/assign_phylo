@@ -5,6 +5,7 @@ from matplotlib.axes import Axes
 from Bio import AlignIO
 import matplotlib
 import matplotlib.pyplot as plt
+import math
 
 
 class Node:
@@ -230,139 +231,177 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     ax: Axes
         A matplotlib Axes object which should be used for plotting.
     kwargs
-        Feel free to replace/use these with any additional arguments you need.
-        But make sure your function can work without them, for testing purposes.
+        Optional extras (all have defaults):
+        show_confidence : bool   - draw support values at internal nodes
+        scale_length    : float  - length of the scale bar (default: auto)
+        line_color      : str    - branch colour (default "#bbbbbb")
+        fontsize        : int    - leaf label size (default 10)
+        groups          : list of (label, [leaf names], italic: bool)
+                          - draws a bracket and label on the right
 
     Example
     -------
-    >>> import matplotlib.pyplot as plt
-    >>>
-    >>> tree = neighbor_joining(distances)
-    >>> fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
+    >>> fig, ax = plt.subplots(figsize=(8, 8))
     >>> plot_nj_tree(tree=tree, ax=ax)
     >>> fig.savefig("example.png")
-
     """
-    # Create axis if not provided
     if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 8))
+        _, ax = plt.subplots(figsize=(8, 8))
 
-    # Collect leaves in left-to-right order
+    line_color = kwargs.get("line_color", "#bbbbbb")
+    fontsize = kwargs.get("fontsize", 10)
+    show_conf = kwargs.get("show_confidence", False)
+    groups = kwargs.get("groups", None)
+    show_len = kwargs.get("show_lengths", True)
+    decimals = kwargs.get("length_decimals", 0)
+    lw = 1.0
+
+    # Layout is stored in dicts keyed by id(node), so the Node objects
+    # are never mutated and no extra attributes are required.
+    def children(node):
+        """Return [(child, branch_length), ...] for a node."""
+        out = []
+        if node.left is not None:
+            out.append((node.left, node.left_distance or 0.0))
+        if node.right is not None:
+            out.append((node.right, node.right_distance or 0.0))
+        return out
+
+    # ---- Leaves in left-to-right order --------------------------------
     leaves = []
 
     def collect_leaves(node):
-        if node.left is None and node.right is None:
+        kids = children(node)
+        if not kids:
             leaves.append(node)
-        else:
-            if node.left:
-                collect_leaves(node.left)
-            if node.right:
-                collect_leaves(node.right)
+            return
+        for child, _ in kids:
+            collect_leaves(child)
 
     collect_leaves(tree)
+    leaf_y = {id(leaf): i for i, leaf in enumerate(leaves)}
 
-    leaf_y = {leaf: i for i, leaf in enumerate(leaves)}
+    # ---- x = cumulative distance from root ----------------------------
+    xs = {}
 
-    # Compute x positions (distance from root)
-   
-    def compute_x(node, parent_x=0.0):
-        node.x = parent_x
-        if node.left:
-            compute_x(node.left, parent_x + (node.left_distance or 0.0))
-        if node.right:
-            compute_x(node.right, parent_x + (node.right_distance or 0.0))
+    def compute_x(node, x=0.0):
+        xs[id(node)] = x
+        for child, dist in children(node):
+            compute_x(child, x + dist)
+
+    # ---- y = leaf index, internal nodes centred on their children -----
+    ys = {}
+
+    def compute_y(node):
+        kids = children(node)
+        if not kids:
+            ys[id(node)] = leaf_y[id(node)]
+        else:
+            vals = [compute_y(child) for child, _ in kids]
+            ys[id(node)] = sum(vals) / len(vals)
+        return ys[id(node)]
 
     compute_x(tree)
-
-    # Compute y positions (vertical placement)
-    
-    def compute_y(node):
-        if node.left is None and node.right is None:
-            node.y = leaf_y[node]
-        else:
-            y_vals = []
-            if node.left:
-                y_vals.append(compute_y(node.left))
-            if node.right:
-                y_vals.append(compute_y(node.right))
-            node.y = sum(y_vals) / len(y_vals)
-        return node.y
-
     compute_y(tree)
 
-    # Draw the tree
-   
-    def draw(node):
-        if node.left:
-            ax.plot(
-                [node.x, node.left.x],
-                [node.y, node.left.y],
-                color="black",
-                linewidth=1.2,
-            )
-            draw(node.left)
+    max_x = max(xs[id(leaf)] for leaf in leaves) or 1.0
+    pad = max_x * 0.01
 
-        if node.right:
-            ax.plot(
-                [node.x, node.right.x],
-                [node.y, node.right.y],
-                color="black",
-                linewidth=1.2,
-            )
-            draw(node.right)
+    # ---- Draw branches (orthogonal elbows) ----------------------------
+    def draw(node):
+        kids = children(node)
+        if not kids:
+            return
+        nx = xs[id(node)]
+        child_ys = [ys[id(c)] for c, _ in kids]
+        ax.plot([nx, nx], [min(child_ys), max(child_ys)],
+                color=line_color, lw=lw, solid_capstyle="butt")
+        for child, dist in kids:
+            cy = ys[id(child)]
+            ax.plot([nx, xs[id(child)]], [cy, cy],
+                    color=line_color, lw=lw, solid_capstyle="butt")
+            if show_len:
+                ax.text((nx + xs[id(child)]) / 2, cy - 0.12,
+                        f"{dist:.{decimals}f}",
+                        fontsize=7, color="#555555",
+                        ha="center", va="bottom")
+            draw(child)
 
     draw(tree)
 
-    # Label leaves
+    # Short root stub, like the example
+    stub = max_x * 0.03
+    ax.plot([-stub, xs[id(tree)]], [ys[id(tree)]] * 2,
+            color=line_color, lw=lw, solid_capstyle="butt")
 
+    # ---- Leaf labels --------------------------------------------------
     for leaf in leaves:
-        ax.text(
-            leaf.x + 0.01,
-            leaf.y,
-            leaf.name,
-            va="center",
-            fontsize=10,
-        )
+        ax.text(xs[id(leaf)] + pad, ys[id(leaf)], leaf.name,
+                va="center", ha="left", fontsize=fontsize)
 
-    # Optional: confidence labels for internal nodes
-  
-    show_conf = kwargs.get("show_confidence", False)
-
+    # ---- Support values (small, grey, left of the node) ---------------
     if show_conf:
         def label_conf(node):
-            if node.confidence is not None:
-                ax.text(node.x, node.y, f"{node.confidence:.2f}",
-                        fontsize=8, color="blue")
-            if node.left:
-                label_conf(node.left)
-            if node.right:
-                label_conf(node.right)
+            if not children(node):
+                return
+            conf = node.confidence
+            if conf is not None:
+                txt = f"{conf:g}" if isinstance(conf, (int, float)) else str(conf)
+                ax.text(xs[id(node)] - pad, ys[id(node)] + 0.15, txt,
+                        fontsize=7, color="#555555", ha="right", va="bottom")
+            for child, _ in children(node):
+                label_conf(child)
 
         label_conf(tree)
 
-    # Styling
+    # ---- Optional clade brackets with labels --------------------------
+    longest = max(len(str(leaf.name)) for leaf in leaves)
+    text_end = max_x * (1 + 0.035 * longest)
 
-    ax.set_xlabel("Genetic distance")
-    ax.set_ylabel("Taxa")
-    ax.set_title("Neighbor-Joining Phylogeny")
+    if groups:
+        name_to_y = {leaf.name: ys[id(leaf)] for leaf in leaves}
+        bx = text_end + pad * 4
+        tick = max_x * 0.015
+        for label, names, *rest in groups:
+            italic = rest[0] if rest else True
+            gy = [name_to_y[n] for n in names if n in name_to_y]
+            if not gy:
+                continue
+            y0, y1 = min(gy) - 0.4, max(gy) + 0.4
+            ax.plot([bx - tick, bx, bx, bx - tick], [y0, y0, y1, y1],
+                    color="black", lw=1.2, solid_capstyle="butt")
+            ax.text(bx + tick * 2, (y0 + y1) / 2, label, va="center",
+                    fontsize=fontsize + 1,
+                    style="italic" if italic else "normal")
+        ax.set_xlim(-stub * 2, bx + max_x * 0.35)
+    else:
+        ax.set_xlim(-stub * 2, text_end)
 
-    ax.set_ylim(-1, len(leaves))
-    ax.invert_yaxis()
+    # ---- Scale bar ----------------------------------------------------
+    scale = kwargs.get("scale_length")
+    if scale is None:
+        raw = max_x / 5
+        mag = 10 ** math.floor(math.log10(raw))
+        scale = round(raw / mag) * mag or raw
+    y_bar = len(leaves) + 0.2
+    ax.plot([0, scale], [y_bar, y_bar], color="black", lw=1.2)
+    for xx in (0, scale):
+        ax.plot([xx, xx], [y_bar - 0.15, y_bar + 0.15], color="black", lw=1.2)
+    ax.text(scale / 2, y_bar + 0.3, f"{scale:g}", ha="center",
+            va="top", fontsize=8)
 
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    # ---- Styling: no axes, first leaf at top --------------------------
+    ax.set_ylim(len(leaves) + 1, -1)
+    ax.axis("off")
 
     return ax
 
-def plot_phylogenetic_tree_coronaviruses(fasta_file) -> Node:
+def get_phylogenetic_tree_coronaviruses(fasta_file) -> Node:
     # Use: tree = plot_phylogenetic_tree_coronaviruses(data/clustal_MSA_coronavirus.fasta)
     alignment = AlignIO.read(fasta_file, "fasta")
     labels = [rec.id for rec in alignment]   # e.g. "Breda|NC_007447.1"
     D = hamming_distance_array("data/clustal_MSA_coronavirus.fasta")
     tree = neighbor_joining(D, labels)
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 8))
-    plot_nj_tree(tree=tree, ax=ax)
-    fig.savefig("corona.png")
     return tree
 
 def _find_a_parent_to_node(tree: Node, node: Node) -> tuple:
@@ -389,6 +428,17 @@ def _remove_child_from_parent(parent_node: Node, child_location: str) -> None:
     """Utility function for reroot_tree"""
     setattr(parent_node, child_location, None)
     setattr(parent_node, f"{child_location}_distance", 0.0)
+
+def find_node(tree: Node, name: str) -> Node | None:
+    """Return the first node whose name matches `name`, or None if not found."""
+    if tree is None:
+        return None
+    if tree.name == name:
+        return tree
+    left_result = find_node(tree.left, name)
+    if left_result is not None:
+        return left_result
+    return find_node(tree.right, name)
 
 
 def reroot_tree(original_tree: Node, outgroup_node: Node) -> Node:
