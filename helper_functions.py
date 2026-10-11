@@ -221,7 +221,7 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
 
 
 def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
-    #TO DO: Make horizontal/vertical distances cleaner like the example.
+    
     """A function for plotting neighbor joining phylogeny dendrogram.
 
     Parameters
@@ -256,8 +256,6 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     decimals = kwargs.get("length_decimals", 0)
     lw = 1.0
 
-    # Layout is stored in dicts keyed by id(node), so the Node objects
-    # are never mutated and no extra attributes are required.
     def children(node):
         """Return [(child, branch_length), ...] for a node."""
         out = []
@@ -267,7 +265,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
             out.append((node.right, node.right_distance or 0.0))
         return out
 
-    # ---- Leaves in left-to-right order --------------------------------
+    # Leaves in left-to-right order 
     leaves = []
 
     def collect_leaves(node):
@@ -281,7 +279,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     collect_leaves(tree)
     leaf_y = {id(leaf): i for i, leaf in enumerate(leaves)}
 
-    # ---- x = cumulative distance from root ----------------------------
+    # x = cumulative distance from root 
     xs = {}
 
     def compute_x(node, x=0.0):
@@ -289,7 +287,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
         for child, dist in children(node):
             compute_x(child, x + dist)
 
-    # ---- y = leaf index, internal nodes centred on their children -----
+    # y = leaf index, internal nodes centred on their children
     ys = {}
 
     def compute_y(node):
@@ -307,7 +305,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     max_x = max(xs[id(leaf)] for leaf in leaves) or 1.0
     pad = max_x * 0.01
 
-    # ---- Draw branches (orthogonal elbows) ----------------------------
+    # Draw branches
     def draw(node):
         kids = children(node)
         if not kids:
@@ -329,17 +327,17 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
 
     draw(tree)
 
-    # Short root stub, like the example
+    # Short root stub
     stub = max_x * 0.03
     ax.plot([-stub, xs[id(tree)]], [ys[id(tree)]] * 2,
             color=line_color, lw=lw, solid_capstyle="butt")
 
-    # ---- Leaf labels --------------------------------------------------
+    # Leaf labels 
     for leaf in leaves:
         ax.text(xs[id(leaf)] + pad, ys[id(leaf)], leaf.name,
                 va="center", ha="left", fontsize=fontsize)
 
-    # ---- Support values (small, grey, left of the node) ---------------
+    # Support values (small, grey, left of the node)
     if show_conf:
         def label_conf(node):
             if not children(node):
@@ -354,7 +352,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
 
         label_conf(tree)
 
-    # ---- Optional clade brackets with labels --------------------------
+    # Optional clade brackets with labels 
     longest = max(len(str(leaf.name)) for leaf in leaves)
     text_end = max_x * (1 + 0.035 * longest)
 
@@ -377,7 +375,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     else:
         ax.set_xlim(-stub * 2, text_end)
 
-    # ---- Scale bar ----------------------------------------------------
+    # Scale bar 
     scale = kwargs.get("scale_length")
     if scale is None:
         raw = max_x / 5
@@ -390,7 +388,7 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     ax.text(scale / 2, y_bar + 0.3, f"{scale:g}", ha="center",
             va="top", fontsize=8)
 
-    # ---- Styling: no axes, first leaf at top --------------------------
+    # Styling: no axes, first leaf at top 
     ax.set_ylim(len(leaves) + 1, -1)
     ax.axis("off")
 
