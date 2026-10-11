@@ -128,8 +128,9 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
         # Find pair with minimum Q value
         # Use argmin to break ties deterministically
 
-        flat_index = np.argmin(Q + np.eye(n) * np.inf)
-        i, j = divmod(flat_index, n)
+        Q = (n - 2) * D - row_sums[:, None] - row_sums[None, :]
+        np.fill_diagonal(Q, np.inf)
+        i, j = divmod(np.argmin(Q), n)
 
         # Remove rows/columns i and j
         if i > j:
