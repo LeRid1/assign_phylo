@@ -6,6 +6,10 @@ from Bio import AlignIO
 import matplotlib
 import matplotlib.pyplot as plt
 import math
+from Bio import Entrez
+from Bio import SeqIO
+import warnings
+import matplotlib.lines
 
 
 class Node:
@@ -219,6 +223,60 @@ def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
 
     return root
 
+GENERA = ["Alphacoronavirus", "Betacoronavirus",
+          "Gammacoronavirus", "Deltacoronavirus"]
+
+def get_leaf_groups(labels: list, email: str) -> dict:
+    """Map each leaf label to its coronavirus genus using NCBI taxonomy.
+    A helper function for plotting nj tree.
+
+    Returns the genus name, "Outgroup" if the record was found but belongs
+    to none of the four genera, or "Unknown" if no record matched.
+    """
+    Entrez.email = email
+    accessions = [lab.split("|")[-1] for lab in labels]
+    handle = Entrez.efetch(db="nucleotide", id=",".join(accessions),
+                           rettype="gb", retmode="text")
+    records = {}
+    for rec in SeqIO.parse(handle, "genbank"):
+        keys = {rec.id, rec.id.split(".")[0], *rec.annotations.get("accessions", [])}
+        for key in keys:
+            records[key] = rec
+    handle.close()
+
+    mapping, missing = {}, []
+    for lab, acc in zip(labels, accessions):
+        rec = records.get(acc) or records.get(acc.split(".")[0])
+        if rec is None:
+            mapping[lab] = "Unknown"
+            missing.append(lab)
+            continue
+        taxonomy = rec.annotations.get("taxonomy", [])
+        mapping[lab] = next((g for g in GENERA if g in taxonomy), "Outgroup")
+
+    if missing:
+        warnings.warn(f"No NCBI record matched: {missing}")
+    return mapping
+
+GROUP_COLORS = {
+    "Alphacoronavirus": "#1f77b4",
+    "Betacoronavirus": "#d62728",
+    "Gammacoronavirus": "#2ca02c",
+    "Deltacoronavirus": "#ff7f0e",
+    "Outgroup": "#555555",   # record found, but not one of the four genera
+    "Unknown": "#bbbbbb",    # NCBI lookup failed for this leaf
+}
+GROUP_NAMES = {"Unknown": "Unassigned"}  # legend text overrides
+
+def _runs(indices):
+    """Split sorted integers into runs of consecutive values."""
+    runs = []
+    for i in sorted(indices):
+        if runs and i == runs[-1][-1] + 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    return runs
 
 def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     
@@ -233,31 +291,47 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     kwargs
         Optional extras (all have defaults):
         show_confidence : bool   - draw support values at internal nodes
+        show_lengths    : bool   - draw branch lengths (default False)
+        length_decimals : int    - decimals for branch lengths (default 0)
         scale_length    : float  - length of the scale bar (default: auto)
         line_color      : str    - branch colour (default "#bbbbbb")
         fontsize        : int    - leaf label size (default 10)
+        short_labels    : bool   - show "Name" instead of "Name|ACCESSION"
+                                   (default True)
         groups          : list of (label, [leaf names], italic: bool)
-                          - draws a bracket and label on the right
+                          - extra manual brackets on the right
+        leaf_groups     : dict {leaf name: group name}
+                          - colours labels/branches, adds one bracket per
+                          contiguous block of each group
+        group_colors    : dict {group name: colour} (default GROUP_COLORS)
+        show_legend     : bool   - legend of the groups (default True)
 
     Example
     -------
-    >>> fig, ax = plt.subplots(figsize=(8, 8))
+    >>> fig, ax = plt.subplots(figsize=(10, 10))
     >>> plot_nj_tree(tree=tree, ax=ax)
-    >>> fig.savefig("example.png")
+    >>> fig.savefig("example.png", bbox_inches="tight")
     """
     if ax is None:
-        _, ax = plt.subplots(figsize=(8, 8))
+        _, ax = plt.subplots(figsize=(10, 10))
+    fig = ax.figure
 
     line_color = kwargs.get("line_color", "#bbbbbb")
     fontsize = kwargs.get("fontsize", 10)
     show_conf = kwargs.get("show_confidence", False)
-    groups = kwargs.get("groups", None)
-    show_len = kwargs.get("show_lengths", True)
+    show_len = kwargs.get("show_lengths", False)
     decimals = kwargs.get("length_decimals", 0)
+    groups = kwargs.get("groups", None)
+    leaf_groups = kwargs.get("leaf_groups", None)
+    colors = {**GROUP_COLORS, **kwargs.get("group_colors", {})}
+    show_legend = kwargs.get("show_legend", True) and bool(leaf_groups)
+    short = kwargs.get("short_labels", True)
     lw = 1.0
 
+    def display_name(name):
+        return name.split("|")[0].replace("_", " ") if short else name
+
     def children(node):
-        """Return [(child, branch_length), ...] for a node."""
         out = []
         if node.left is not None:
             out.append((node.left, node.left_distance or 0.0))
@@ -265,7 +339,6 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
             out.append((node.right, node.right_distance or 0.0))
         return out
 
-    # Leaves in left-to-right order 
     leaves = []
 
     def collect_leaves(node):
@@ -279,16 +352,31 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     collect_leaves(tree)
     leaf_y = {id(leaf): i for i, leaf in enumerate(leaves)}
 
-    # x = cumulative distance from root 
-    xs = {}
+    # Group of each node: the shared group of all its leaves, else None
+    node_group = {}
+
+    def compute_group(node):
+        kids = children(node)
+        if not kids:
+            g = leaf_groups.get(node.name) if leaf_groups else None
+        else:
+            gs = {compute_group(c) for c, _ in kids}
+            g = gs.pop() if len(gs) == 1 else None
+        node_group[id(node)] = g
+        return g
+
+    compute_group(tree)
+
+    def color_of(node):
+        g = node_group.get(id(node))
+        return colors.get(g, line_color) if g else line_color
+
+    xs, ys = {}, {}
 
     def compute_x(node, x=0.0):
         xs[id(node)] = x
         for child, dist in children(node):
             compute_x(child, x + dist)
-
-    # y = leaf index, internal nodes centred on their children
-    ys = {}
 
     def compute_y(node):
         kids = children(node)
@@ -303,7 +391,45 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     compute_y(tree)
 
     max_x = max(xs[id(leaf)] for leaf in leaves) or 1.0
-    pad = max_x * 0.01
+
+    # Brackets: one per contiguous block of leaves
+    brackets = []  # (label, [leaf indices], italic, colour)
+    if leaf_groups:
+        for g in dict.fromkeys(leaf_groups.get(l.name) for l in leaves):
+            if g and g not in ("Outgroup", "Unknown"):
+                idx = [leaf_y[id(l)] for l in leaves if leaf_groups.get(l.name) == g]
+                brackets.append((g, idx, True, colors.get(g, "black")))
+    for label, names, *rest in (groups or []):
+        idx = [leaf_y[id(l)] for l in leaves if l.name in names]
+        brackets.append((label, idx, rest[0] if rest else True, "black"))
+
+    # Layout: measure text so nothing overlaps 
+    try:
+        renderer = fig.canvas.get_renderer()
+    except AttributeError:
+        renderer = fig._get_renderer()
+
+    def text_width(s, **kw):
+        t = ax.text(0, 0, s, **kw)
+        w = t.get_window_extent(renderer).width
+        t.remove()
+        return w
+
+    leaf_px = max(text_width(display_name(l.name), fontsize=fontsize) for l in leaves)
+    bracket_px = max(
+        (text_width(b[0], fontsize=fontsize + 1, style="italic") for b in brackets),
+        default=0,
+    )
+    axes_px = ax.get_window_extent(renderer).width
+
+    stub = max_x * 0.03
+    xmin = -stub * 2
+    right_px = 6 + leaf_px + (24 + bracket_px + 10 if brackets else 6)
+    span = (max_x - xmin) / (1 - min(right_px / axes_px, 0.8))
+    xmax = xmin + span
+    px2d = span / axes_px                      # data units per pixel
+    bx = max_x + px2d * (6 + leaf_px + 16)     # bracket x position
+    tick = px2d * 8
 
     # Draw branches
     def draw(node):
@@ -313,31 +439,30 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
         nx = xs[id(node)]
         child_ys = [ys[id(c)] for c, _ in kids]
         ax.plot([nx, nx], [min(child_ys), max(child_ys)],
-                color=line_color, lw=lw, solid_capstyle="butt")
+                color=color_of(node), lw=lw, solid_capstyle="butt")
         for child, dist in kids:
             cy = ys[id(child)]
-            ax.plot([nx, xs[id(child)]], [cy, cy],
-                    color=line_color, lw=lw, solid_capstyle="butt")
+            ax.plot([nx, xs[id(child)]], [cy, cy], color=color_of(child),
+                    lw=lw + 0.5 * bool(node_group[id(child)]),
+                    solid_capstyle="butt")
             if show_len:
                 ax.text((nx + xs[id(child)]) / 2, cy - 0.12,
-                        f"{dist:.{decimals}f}",
-                        fontsize=7, color="#555555",
+                        f"{dist:.{decimals}f}", fontsize=7, color="#555555",
                         ha="center", va="bottom")
             draw(child)
 
     draw(tree)
-
-    # Short root stub
-    stub = max_x * 0.03
     ax.plot([-stub, xs[id(tree)]], [ys[id(tree)]] * 2,
-            color=line_color, lw=lw, solid_capstyle="butt")
+            color=color_of(tree), lw=lw, solid_capstyle="butt")
 
-    # Leaf labels 
+    # Leaf labels (offset in points, so spacing is size-independent)
     for leaf in leaves:
-        ax.text(xs[id(leaf)] + pad, ys[id(leaf)], leaf.name,
-                va="center", ha="left", fontsize=fontsize)
+        ax.annotate(display_name(leaf.name), (xs[id(leaf)], ys[id(leaf)]),
+                    xytext=(4, 0), textcoords="offset points",
+                    va="center", ha="left", fontsize=fontsize,
+                    color=color_of(leaf) if node_group[id(leaf)] else "black")
 
-    # Support values (small, grey, left of the node)
+    # Support values
     if show_conf:
         def label_conf(node):
             if not children(node):
@@ -345,35 +470,24 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
             conf = node.confidence
             if conf is not None:
                 txt = f"{conf:g}" if isinstance(conf, (int, float)) else str(conf)
-                ax.text(xs[id(node)] - pad, ys[id(node)] + 0.15, txt,
-                        fontsize=7, color="#555555", ha="right", va="bottom")
+                ax.annotate(txt, (xs[id(node)], ys[id(node)]),
+                            xytext=(-3, 2), textcoords="offset points",
+                            fontsize=7, color="#555555", ha="right", va="bottom")
             for child, _ in children(node):
                 label_conf(child)
 
         label_conf(tree)
 
-    # Optional clade brackets with labels 
-    longest = max(len(str(leaf.name)) for leaf in leaves)
-    text_end = max_x * (1 + 0.035 * longest)
-
-    if groups:
-        name_to_y = {leaf.name: ys[id(leaf)] for leaf in leaves}
-        bx = text_end + pad * 4
-        tick = max_x * 0.015
-        for label, names, *rest in groups:
-            italic = rest[0] if rest else True
-            gy = [name_to_y[n] for n in names if n in name_to_y]
-            if not gy:
-                continue
-            y0, y1 = min(gy) - 0.4, max(gy) + 0.4
+    # Brackets 
+    for label, idx, italic, col in brackets:
+        for run in _runs(idx):
+            y0, y1 = run[0] - 0.35, run[-1] + 0.35
             ax.plot([bx - tick, bx, bx, bx - tick], [y0, y0, y1, y1],
-                    color="black", lw=1.2, solid_capstyle="butt")
-            ax.text(bx + tick * 2, (y0 + y1) / 2, label, va="center",
-                    fontsize=fontsize + 1,
-                    style="italic" if italic else "normal")
-        ax.set_xlim(-stub * 2, bx + max_x * 0.35)
-    else:
-        ax.set_xlim(-stub * 2, text_end)
+                    color=col, lw=1.6, solid_capstyle="butt")
+            ax.annotate(label, (bx, (y0 + y1) / 2), xytext=(6, 0),
+                        textcoords="offset points", va="center", ha="left",
+                        fontsize=fontsize + 1, color=col,
+                        style="italic" if italic else "normal")
 
     # Scale bar 
     scale = kwargs.get("scale_length")
@@ -381,17 +495,25 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
         raw = max_x / 5
         mag = 10 ** math.floor(math.log10(raw))
         scale = round(raw / mag) * mag or raw
-    y_bar = len(leaves) + 0.2
+    y_bar = len(leaves) + 0.4
     ax.plot([0, scale], [y_bar, y_bar], color="black", lw=1.2)
     for xx in (0, scale):
         ax.plot([xx, xx], [y_bar - 0.15, y_bar + 0.15], color="black", lw=1.2)
-    ax.text(scale / 2, y_bar + 0.3, f"{scale:g}", ha="center",
-            va="top", fontsize=8)
+    ax.text(scale / 2, y_bar + 0.3, f"{scale:g}", ha="center", va="top", fontsize=8)
 
-    # Styling: no axes, first leaf at top 
-    ax.set_ylim(len(leaves) + 1, -1)
+    # Legend in its own band below the tree
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(len(leaves) + (3.2 if show_legend else 1.5), -1)
+    if show_legend:
+        present = [g for g in colors if g in set(leaf_groups.values())]
+        handles = [matplotlib.lines.Line2D([0], [0], color=colors[g], lw=3,
+                                           label=GROUP_NAMES.get(g, g))
+                   for g in present]
+        ax.legend(handles=handles, loc="lower right", bbox_to_anchor=(1, 0),
+                  ncol=min(len(handles), 3), frameon=False,
+                  fontsize=fontsize - 1, borderaxespad=0)
+
     ax.axis("off")
-
     return ax
 
 def get_phylogenetic_tree_coronaviruses(fasta_file) -> Node:
