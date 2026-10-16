@@ -93,9 +93,7 @@ def hamming_distance_array(MSA) -> np.ndarray:
 
 
 def neighbor_joining(distances: np.ndarray, labels: list) -> Node:
-    # Test by running python -m unittest test_helper_functions.TestNeighborJoining
-
-
+    
     """The Neighbor-Joining algorithm.
 
     For the same results as in the later test dendrograms;
@@ -517,7 +515,10 @@ def plot_nj_tree(tree: Node, ax: Axes = None, **kwargs) -> None:
     return ax
 
 def get_phylogenetic_tree_coronaviruses(fasta_file) -> Node:
-    # Use: tree = plot_phylogenetic_tree_coronaviruses(data/clustal_MSA_coronavirus.fasta)
+    """
+    Usage: 
+    tree = plot_phylogenetic_tree_coronaviruses(data/clustal_MSA_coronavirus.fasta)
+    """
     alignment = AlignIO.read(fasta_file, "fasta")
     labels = [rec.id for rec in alignment]   # e.g. "Breda|NC_007447.1"
     D = hamming_distance_array("data/clustal_MSA_coronavirus.fasta")
@@ -672,3 +673,273 @@ def plot_nj_tree_radial(tree: Node, ax: Axes = None, **kwargs) -> None:
 
     """
     raise NotImplementedError()
+
+def fetch_spike_protein(accession_id, Entrez_email):
+    from Bio import Entrez, SeqIO
+    Entrez.email = Entrez_email
+
+    # Fetch annotated GenBank record 
+    handle = Entrez.efetch(
+        db="nucleotide",
+        id=accession_id,
+        idtype="acc",
+        rettype="gb",
+        retmode="text"
+    )
+    record = SeqIO.read(handle, "genbank")
+    handle.close()
+
+    # Search for CDS with gene="S" or product containing "spike"
+    for feature in record.features:
+        if feature.type == "CDS":
+            gene = feature.qualifiers.get("gene", [""])
+            product = feature.qualifiers.get("product", [""])
+
+            gene_name = gene[0].lower()
+            product_name = product[0].lower()
+
+            if gene_name == "s" or "spike" in product_name:
+                cds_seq = feature.extract(record.seq)
+                protein = cds_seq.translate(to_stop=True)
+                return str(protein)
+
+    raise ValueError("Spike protein (S gene) not found in GenBank record.")
+    
+def scoring_function(a, b, substitution_matrix):
+
+    #chosen gap penalty
+    if a == '-' or b == '-':
+        return -11  
+    
+    try:
+        return substitution_matrix[a, b]
+    except KeyError:
+        return -1000
+    
+def global_alignment(seq1, seq2, scoring_function, substitution_matrix):
+
+    """Global sequence alignment using the Needleman–Wunsch algorithm.
+
+    Indels should be denoted with the "-" character.
+
+    Parameters
+    ----------
+    seq1: str
+        First sequence to be aligned.
+    seq2: str
+        Second sequence to be aligned.
+    scoring_function: Callable
+
+    Returns
+    -------
+    str
+        First aligned sequence.
+    str
+        Second aligned sequence.
+    float
+        Final score of the alignment.
+
+    Examples
+    --------
+    >>> global_alignment("abracadabra", "dabarakadara", lambda x, y: [-1, 1][x == y])
+    ('-ab-racadabra', 'dabarakada-ra', 5.0)
+
+    Other alignments are not possible.
+
+    """
+
+    n, m = len(seq1), len(seq2)
+
+    score = [[0] * (m + 1) for _ in range(n + 1)]
+    score[0][0] = 0
+    back  = [[None] * (m + 1) for _ in range(n + 1)]
+
+    gap_penalty = scoring_function('-', '-', substitution_matrix)
+
+    # initialization
+    for i in range(1, n + 1):
+        score[i][0] = i * gap_penalty
+        back[i][0] = "up"
+
+    for j in range(1, m + 1):
+        score[0][j] = j * gap_penalty
+        back[0][j] = "left"
+
+    # recurrence
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            diag = score[i - 1][j - 1] + scoring_function(seq1[i-1], seq2[j-1], substitution_matrix)
+            up = score[i - 1][j] + gap_penalty
+            left = score[i][j - 1] + gap_penalty
+            best = max(diag, up, left)
+            score[i][j] = best
+
+            if best == diag:
+                back[i][j] = "diag"
+            elif best == up:
+                back[i][j] = "up"
+            else:
+                back[i][j] = "left"
+
+    # traceback
+    aligned1 = []
+    aligned2 = []
+    freq_counter = 0  # amino acid frequency counter
+
+    i, j = n, m
+
+    while i > 0 or j > 0:
+
+        if i == 0:
+            direction = "left"
+        elif j == 0:
+            direction = "up"
+        else:
+            direction = back[i][j]
+        if direction == None:
+            raise RuntimeError(f"Traceback stuck at i={i}, j={j}, direction={direction}")
+
+        if direction == "diag":
+            a1, a2 = seq1[i - 1], seq2[j - 1]
+            aligned1.append(a1)
+            aligned2.append(a2)
+            if a1 == a2 and a1 != '-':  # count identical amino acids
+                freq_counter += 1
+            i -= 1
+            j -= 1
+
+        elif direction == "up":
+            aligned1.append(seq1[i - 1])
+            aligned2.append('-')
+            i -= 1
+
+        elif direction == "left":
+            aligned1.append('-')
+            aligned2.append(seq2[j - 1])
+            j -= 1
+
+    aligned1.reverse()
+    aligned2.reverse()
+
+    final_score = score[n][m]
+    percent_identity = (freq_counter / len(aligned1)) * 100
+
+    return "".join(aligned1), "".join(aligned2), final_score, percent_identity
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def sliding_similarity(seq1, seq2, window=100, gap_chars="-"):
+    """Fraction of matching positions in each window of a pairwise alignment.
+    Positions where both sequences have a gap are skipped."""
+    s1, s2 = str(seq1), str(seq2)
+    assert len(s1) == len(s2), "Aligned sequences must have equal length"
+
+    # Keep only columns where at least one sequence has a residue
+    cols = [(a, b) for a, b in zip(s1, s2) if not (a in gap_chars and b in gap_chars)]
+    match = np.array([1 if (a == b and a not in gap_chars) else 0 for a, b in cols],
+                     dtype=float)
+
+    if len(match) < window:
+        return np.array([match.mean()]), np.array([0])
+    kernel = np.ones(window) / window
+    sim = np.convolve(match, kernel, mode="valid")     # one value per window start
+    positions = np.arange(len(sim)) + window // 2      # window centre
+    return sim, positions
+
+
+def plot_recombination(aligned_human_spike_to_bat, aligned_bat,
+                       aligned_human_spike_to_pangolin, aligned_pangolin,
+                       HvB_genome, Bat_genome, HvP_genome, Pan_genome,
+                       spike_window=100, genome_window=1000,
+                       rbd_aa=(319, 541),  # SARS-CoV-2 RBD in spike aa coordinates
+                       outfile="recombination.svg"):
+    # Spike sliding similarity (at the protein level)
+    sim_bat, pos_bat = sliding_similarity(aligned_human_spike_to_bat, aligned_bat, spike_window)
+    sim_pan, pos_pan = sliding_similarity(aligned_human_spike_to_pangolin, aligned_pangolin, spike_window)
+
+    # Convert alignment-column positions to human spike residue positions
+    def to_human_coords(aligned_human, pos):
+        h = np.array([c != "-" for c in str(aligned_human)])
+        cum = np.cumsum(h)
+        return cum[np.clip(pos, 0, len(cum) - 1)]
+
+    x_bat = to_human_coords(aligned_human_spike_to_bat, pos_bat)
+    x_pan = to_human_coords(aligned_human_spike_to_pangolin, pos_pan)
+
+    # Whole genome sliding similarity (nucleotide level, from the Pairwise Alignment)
+    g_bat, gp_bat = sliding_similarity(HvB_genome, Bat_genome, genome_window)
+    g_pan, gp_pan = sliding_similarity(HvP_genome, Pan_genome, genome_window)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 9))
+
+    # Plot 1: whole genome
+    ax = axes[0]
+    ax.plot(gp_bat, g_bat, color="tab:blue", label="Bat-CoV RaTG13")
+    ax.plot(gp_pan, g_pan, color="tab:orange", label="Pangolin-CoV MP789")
+    ax.set_title("Whole genome similarity to SARS-CoV-2 (window = %d)" % genome_window)
+    ax.set_xlabel("Alignment position (bp)")
+    ax.set_ylabel("Similarity")
+    ax.set_ylim(0.4, 1.0)
+    ax.legend(loc="lower left")
+
+    # Plot 2: spike region
+    ax = axes[1]
+    ax.axvspan(rbd_aa[0], rbd_aa[1], color="khaki", alpha=0.5, label="RBD")
+    ax.plot(x_bat, sim_bat, color="tab:blue", label="Bat-CoV RaTG13")
+    ax.plot(x_pan, sim_pan, color="tab:orange", label="Pangolin-CoV MP789")
+    ax.set_title("Spike protein amino-acid similarity to SARS-CoV-2 (window = %d)" % spike_window)
+    ax.set_xlabel("Spike residue position (human SARS-CoV-2)")
+    ax.set_ylabel("Similarity")
+    ax.set_ylim(0.4, 1.0)
+    ax.legend(loc="lower left")
+
+    plt.tight_layout()
+    plt.savefig("recombination.svg")
+
+    # Numeric similarity: inside vs outside RBD
+    def mean_in_out(x, sim):
+        inside = (x >= rbd_aa[0]) & (x <= rbd_aa[1])
+        return sim[inside].mean(), sim[~inside].mean()
+
+    results = {"Bat": mean_in_out(x_bat, sim_bat), "Pangolin": mean_in_out(x_pan, sim_pan)}
+    for name, (i, o) in results.items():
+        print(f"{name}: mean similarity inside RBD = {i:.3f}, outside RBD = {o:.3f}")
+    return results
+
+
+def pairwise_genome_alignment(ref, query):
+    from Bio.Align import PairwiseAligner
+    """Global nucleotide alignment of two raw sequences 
+    using Biopython's PairwiseAligner.
+    Returns two gapped strings of equal length."""
+    ref, query = str(ref).upper(), str(query).upper()
+
+    aligner = PairwiseAligner()
+    aligner.mode = "global"
+    aligner.match_score = 2
+    aligner.mismatch_score = -1
+    aligner.open_gap_score = -5
+    aligner.extend_gap_score = -0.5
+
+    aln = aligner.align(ref, query)[0]
+
+    a, b = [], []
+    prev_r = prev_q = 0
+    for (r0, r1), (q0, q1) in zip(*aln.aligned):
+        if r0 > prev_r:                       # ref residues missing in query
+            a.append(ref[prev_r:r0]); b.append("-" * (r0 - prev_r))
+        if q0 > prev_q:                       # query residues missing in ref
+            a.append("-" * (q0 - prev_q)); b.append(query[prev_q:q0])
+        a.append(ref[r0:r1]); b.append(query[q0:q1])
+        prev_r, prev_q = r1, q1
+    # trailing overhangs
+    if prev_r < len(ref):
+        a.append(ref[prev_r:]); b.append("-" * (len(ref) - prev_r))
+    if prev_q < len(query):
+        a.append("-" * (len(query) - prev_q)); b.append(query[prev_q:])
+
+    ga, gb = "".join(a), "".join(b)
+    assert len(ga) == len(gb)
+    return ga, gb
